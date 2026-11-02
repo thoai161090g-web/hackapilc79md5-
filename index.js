@@ -1,8 +1,3 @@
-Đây là full code đã được sửa sạch lỗi export (chuyển hoàn toàn sang CommonJS) để Render có thể chạy trực tiếp mà không bị văng (exit code 1).
-
-Mày copy toàn bộ đoạn dưới đây, dán đè vào file index.js trên Github của mày. Nhớ giữ nguyên file package.json như tao đã gửi ở trên. Sau đó lên Render bấm "Clear build cache & deploy" là API sẽ chạy ngon lành.
-
-```javascript
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -11,33 +6,200 @@ const app = express();
 app.use(cors());
 
 const API_URL = "https://wtxmd52.tele68.com/v1/txmd5/lite-sessions?cp=R&cl=R&pf=web&at=3959701241b686f12e01bfe9c3a319b8";
-
-/* ============================================================
-    PHẦN 1: TOÀN BỘ BẢNG TRA & HẰNG SỐ CỦA THUẬT TOÁN
-   ============================================================ */
 const MAX_HISTORY = 50;
 
-// Bảng mẹo MD5 theo tổng điểm
+/* ===========================
+    HÀM TÍNH TÀI/XỈU
+==========================*/
+function getTaiXiu(d1, d2, d3) {
+  const total = d1 + d2 + d3;
+  return total <= 10 ? "Xỉu" : "Tài";
+}
+
+/*===========================
+    TÍNH ĐỘ TIN CẬY - CẢI TIẾN
+===========================*/
+function calculateConfidence(history, prediction, last_n = 12) {
+  if (history.length < 4) return 0;
+
+  let correct = 0;
+  let total = 0;
+
+  const recent = history.slice(0, Math.min(last_n, history.length - 1));
+
+  for (let i = 0; i < recent.length - 1; i++) {
+    if (i + 3 >= history.length) break;
+    
+    const historySlice = history.slice(i);
+    const predict = duDoanNangCao(historySlice, last_n);
+    
+    if (predict && predict === history[i + 1]?.ket_qua) {
+      correct++;
+    }
+    total++;
+  }
+
+  const baseConfidence = total > 0 ? (correct / total) * 100 : 0;
+  const dataBonus = Math.min(history.length / 50 * 10, 10);
+  
+  return Math.round(Math.min(baseConfidence + dataBonus, 100));
+}
+
+/*===========================
+    HÀM PHÂN TÍCH MARKOV
+===========================*/
+function analyzeMarkov(seq, order) {
+  const transitions = {};
+  const counts = { Tài: 0, Xỉu: 0 };
+
+  for (let i = 0; i < seq.length - order; i++) {
+    const key = seq.slice(i, i + order).join("-");
+    const next = seq[i + order];
+    
+    if (!transitions[key]) {
+      transitions[key] = { Tài: 0, Xỉu: 0 };
+    }
+    transitions[key][next]++;
+  }
+
+  const lastState = seq.slice(0, order).join("-");
+  if (transitions[lastState]) {
+    const { Tài, Xỉu } = transitions[lastState];
+    const total = Tài + Xỉu;
+    
+    if (total > 0) {
+      counts.Tài = Tài / total;
+      counts.Xỉu = Xỉu / total;
+    }
+  }
+
+  return counts;
+}
+
+/*===========================
+    HÀM PHÂN TÍCH PATTERN
+===========================*/
+function analyzePatterns(seq) {
+  const scores = { Tài: 0, Xỉu: 0 };
+  const patternLength = 3;
+  
+  if (seq.length < patternLength + 2) {
+    return { Tài: 0.5, Xỉu: 0.5 };
+  }
+
+  const currentPattern = seq.slice(0, patternLength).join("");
+  let taiMatches = 0;
+  let xiuMatches = 0;
+  let totalMatches = 0;
+
+  for (let i = patternLength; i < seq.length - 1; i++) {
+    const testPattern = seq.slice(i - patternLength, i).join("");
+    
+    if (testPattern === currentPattern) {
+      const next = seq[i];
+      if (next === "Tài") taiMatches++;
+      else if (next === "Xỉu") xiuMatches++;
+      totalMatches++;
+    }
+  }
+
+  if (totalMatches > 0) {
+    scores.Tài = taiMatches / totalMatches;
+    scores.Xỉu = xiuMatches / totalMatches;
+  }
+
+  return scores;
+}
+
+/*===========================
+    PHÂN TÍCH TỔNG ĐIỂM
+===========================*/
+function analyzeTong(tongSeq) {
+  if (tongSeq.length < 3) return { Tài: 0.5, Xỉu: 0.5 };
+
+  const scores = { Tài: 0, Xỉu: 0 };
+  const recentAvg = tongSeq.reduce((a, b) => a + b, 0) / tongSeq.length;
+  
+  let increasing = 0;
+  let decreasing = 0;
+  
+  for (let i = 1; i < tongSeq.length; i++) {
+    if (tongSeq[i] > tongSeq[i-1]) increasing++;
+    else if (tongSeq[i] < tongSeq[i-1]) decreasing++;
+  }
+
+  if (increasing > decreasing) {
+    scores.Tài = 0.7;
+    scores.Xỉu = 0.3;
+  } else if (decreasing > increasing) {
+    scores.Tài = 0.3;
+    scores.Xỉu = 0.7;
+  } else {
+    scores.Tài = recentAvg > 10.5 ? 0.6 : 0.4;
+    scores.Xỉu = 1 - scores.Tài;
+  }
+
+  return scores;
+}
+
+/*===========================
+    PHÂN TÍCH CHU KỲ
+===========================*/
+function analyzeCycles(seq) {
+  if (seq.length < 6) return { Tài: 0.5, Xỉu: 0.5 };
+
+  const scores = { Tài: 0, Xỉu: 0 };
+  const maxCycleLength = Math.min(10, Math.floor(seq.length / 2));
+  
+  let bestCycle = 0;
+  let bestCorrelation = 0;
+
+  for (let cycle = 2; cycle <= maxCycleLength; cycle++) {
+    let matches = 0;
+    let total = 0;
+    
+    for (let i = 0; i < seq.length - cycle; i++) {
+      if (seq[i] === seq[i + cycle]) {
+        matches++;
+      }
+      total++;
+    }
+    
+    const correlation = matches / total;
+    if (correlation > bestCorrelation) {
+      bestCorrelation = correlation;
+      bestCycle = cycle;
+    }
+  }
+
+  if (bestCycle > 0 && bestCorrelation > 0.6) {
+    const predicted = seq[seq.length - bestCycle];
+    if (predicted === "Tài") {
+      scores.Tài = 0.8;
+      scores.Xỉu = 0.2;
+    } else {
+      scores.Tài = 0.2;
+      scores.Xỉu = 0.8;
+    }
+  }
+
+  return scores;
+}
+
+/*===========================
+    BẢNG TRA MD5 & XÚC XẮC
+===========================*/
 const MD5_TIPS = {
-  3:  { result: "Xỉu", confidence: 70 },
-  4:  { result: "Xỉu", confidence: 60 },
-  5:  { result: "Tài", confidence: 70 },
-  6:  { result: "Xỉu", confidence: 60 },
-  7:  { result: "Tài", confidence: 80 },
-  8:  { result: "Xỉu", confidence: 80 },
-  9:  { result: "Xỉu", confidence: 70 },
-  10: { result: "Tài", confidence: 80 },
-  11: { result: "Xỉu", confidence: 60 },
-  12: { result: "Tài", confidence: 80 },
-  13: { result: "Tài", confidence: 80 },
-  14: { result: "Xỉu", confidence: 60 },
-  15: { result: "Xỉu", confidence: 70 },
-  16: { result: "Tài", confidence: 60 },
-  17: { result: "Xỉu", confidence: 60 },
-  18: { result: "Xỉu", confidence: 80 },
+  3: { result: "Xỉu", confidence: 70 }, 4: { result: "Xỉu", confidence: 60 },
+  5: { result: "Tài", confidence: 70 }, 6: { result: "Xỉu", confidence: 60 },
+  7: { result: "Tài", confidence: 80 }, 8: { result: "Xỉu", confidence: 80 },
+  9: { result: "Xỉu", confidence: 70 }, 10: { result: "Tài", confidence: 80 },
+  11: { result: "Xỉu", confidence: 60 }, 12: { result: "Tài", confidence: 80 },
+  13: { result: "Tài", confidence: 80 }, 14: { result: "Xỉu", confidence: 60 },
+  15: { result: "Xỉu", confidence: 70 }, 16: { result: "Tài", confidence: 60 },
+  17: { result: "Xỉu", confidence: 60 }, 18: { result: "Xỉu", confidence: 80 },
 };
 
-// Bảng tra tổng điểm chi tiết theo bộ xúc xắc
 const DICE_TABLE = {
   3:  { "111": { result: "Xỉu", confidence: 80 } },
   4:  { "112": { result: "Xỉu", confidence: 70 }, "121": { result: "Tài", confidence: 65 }, "211": { result: "Tài", confidence: 65 } },
@@ -57,134 +219,13 @@ const DICE_TABLE = {
   18: { "666": { result: "BỎ", confidence: 0 } },
 };
 
-/* ============================================================
-    PHẦN 2: CÁC MODULE PHÂN TÍCH CỦA THUẬT TOÁN GỐC
-   ============================================================ */
-function getTaiXiu(d1, d2, d3) {
-  const total = d1 + d2 + d3;
-  return total <= 10 ? "Xỉu" : "Tài";
-}
-
-function isNoRunHour() {
-  const h = new Date().getHours();
-  return h >= 0 && h < 5; // Từ 12h đêm đến 5h sáng
-}
-
-function analyzeMarkov(seq, order) {
-  const transitions = {};
-  const counts = { Tài: 0, Xỉu: 0 };
-  for (let i = 0; i < seq.length - order; i++) {
-    const key = seq.slice(i, i + order).join("-");
-    const next = seq[i + order];
-    if (!transitions[key]) transitions[key] = { Tài: 0, Xỉu: 0 };
-    transitions[key][next]++;
-  }
-  const lastState = seq.slice(0, order).join("-");
-  if (transitions[lastState]) {
-    const { Tài, Xỉu } = transitions[lastState];
-    const total = Tài + Xỉu;
-    if (total > 0) {
-      counts.Tài = Tài / total;
-      counts.Xỉu = Xỉu / total;
-    }
-  }
-  return counts;
-}
-
-function analyzePatterns(seq) {
-  const patternLength = 3;
-  if (seq.length < patternLength + 2) return { Tài: 0.5, Xỉu: 0.5 };
-  const currentPattern = seq.slice(0, patternLength).join("");
-  let taiMatches = 0, xiuMatches = 0, totalMatches = 0;
-  for (let i = patternLength; i < seq.length - 1; i++) {
-    const testPattern = seq.slice(i - patternLength, i).join("");
-    if (testPattern === currentPattern) {
-      const next = seq[i];
-      if (next === "Tài") taiMatches++;
-      else if (next === "Xỉu") xiuMatches++;
-      totalMatches++;
-    }
-  }
-  if (totalMatches > 0) return { Tài: taiMatches / totalMatches, Xỉu: xiuMatches / totalMatches };
-  return { Tài: 0.5, Xỉu: 0.5 };
-}
-
-function analyzeTong(tongSeq) {
-  if (tongSeq.length < 3) return { Tài: 0.5, Xỉu: 0.5 };
-  const recentAvg = tongSeq.reduce((a, b) => a + b, 0) / tongSeq.length;
-  let increasing = 0, decreasing = 0;
-  for (let i = 1; i < tongSeq.length; i++) {
-    if (tongSeq[i] > tongSeq[i - 1]) increasing++;
-    else if (tongSeq[i] < tongSeq[i - 1]) decreasing++;
-  }
-  if (increasing > decreasing) return { Tài: 0.7, Xỉu: 0.3 };
-  if (decreasing > increasing) return { Tài: 0.3, Xỉu: 0.7 };
-  return { Tài: recentAvg > 10.5 ? 0.6 : 0.4, Xỉu: recentAvg > 10.5 ? 0.4 : 0.6 };
-}
-
-function analyzeCycles(seq) {
-  if (seq.length < 6) return { Tài: 0.5, Xỉu: 0.5 };
-  const maxCycleLength = Math.min(10, Math.floor(seq.length / 2));
-  let bestCycle = 0, bestCorrelation = 0;
-  for (let cycle = 2; cycle <= maxCycleLength; cycle++) {
-    let matches = 0, total = 0;
-    for (let i = 0; i < seq.length - cycle; i++) {
-      if (seq[i] === seq[i + cycle]) matches++;
-      total++;
-    }
-    const correlation = matches / total;
-    if (correlation > bestCorrelation) { bestCorrelation = correlation; bestCycle = cycle; }
-  }
-  if (bestCycle > 0 && bestCorrelation > 0.6) {
-    const predicted = seq[seq.length - bestCycle];
-    return predicted === "Tài" ? { Tài: 0.8, Xỉu: 0.2 } : { Tài: 0.2, Xỉu: 0.8 };
-  }
-  return { Tài: 0.5, Xỉu: 0.5 };
-}
-
-function analyzeMD5Tips(tong) {
-  return MD5_TIPS[tong] || { result: "Chưa rõ", confidence: 50 };
-}
-
-function analyzeDiceTable(d1, d2, d3) {
-  const tong = d1 + d2 + d3;
-  const sorted = [d1, d2, d3].sort((a, b) => a - b).join("");
-  const table = DICE_TABLE[tong];
-  if (table && table[sorted]) return table[sorted];
-  return null;
-}
-
-function analyzeCau(history) {
-  const seq = history.map(h => h.ket_qua);
-  const tongSeq = history.map(h => h.tong);
-  if (seq.length < 6) return { Tài: 0.5, Xỉu: 0.5, note: "" };
-
-  let alternate = 0;
-  for (let i = 0; i < Math.min(seq.length - 1, 10); i++) if (seq[i] !== seq[i + 1]) alternate++;
-  if (alternate >= 6) return { Tài: 0.5, Xỉu: 0.5, note: "Cầu 1-1 so le" };
-
-  let bet = 1;
-  for (let i = 1; i < Math.min(seq.length, 10); i++) {
-    if (seq[i] === seq[0]) bet++; else break;
-  }
-  if (bet >= 5) return { Tài: seq[0] === "Tài" ? 0.3 : 0.7, Xỉu: seq[0] === "Tài" ? 0.7 : 0.3, note: "Cầu bệt dài" };
-
-  if (seq.length >= 3) {
-    const last3 = seq.slice(0, 3);
-    const has9or10or7 = last3.some((_, idx) => [9, 10, 7].includes(tongSeq[idx]));
-    if (has9or10or7 && last3[0] !== last3[1] && last3[1] !== last3[2]) {
-      return { Tài: 0.5, Xỉu: 0.5, note: "3 trắng đen + 9/10/7" };
-    }
-  }
-  return { Tài: 0.5, Xỉu: 0.5, note: "" };
-}
-
-/* ============================================================
-    PHẦN 3: HÀM DỰ ĐOÁN TỔNG HỢP (FULL THUẬT TOÁN)
-   ============================================================ */
+/*===========================
+    THUẬT TOÁN DỰ ĐOÁN NÂNG CAO
+===========================*/
 function duDoanNangCao(historyData, last_n = 15) {
-  if (historyData.length < 4) return { result: "Chưa có dữ liệu", confidence: 0 };
+  if (!historyData || historyData.length < 4) return "Chưa có dữ liệu";
 
+  // Chuyển đổi format API sang format gốc
   const history = historyData.map(item => ({
     ket_qua: item.resultTruyenThong === "TAI" ? "Tài" : "Xỉu",
     tong: item.point,
@@ -195,40 +236,47 @@ function duDoanNangCao(historyData, last_n = 15) {
   const tongSeq = history.map(h => h.tong);
   const recent = seq.slice(0, Math.min(last_n, seq.length));
   const recentTong = tongSeq.slice(0, Math.min(last_n, tongSeq.length));
-  const lastTong = tongSeq[0];
-  const lastDice = history[0];
 
-  // 1. Tần suất
+  // 1. PHÂN TÍCH TẦN SUẤT
   const tai_count = recent.filter(s => s === "Tài").length;
   const xiu_count = recent.filter(s => s === "Xỉu").length;
-  const frequency_score = { Tài: tai_count / recent.length, Xỉu: xiu_count / recent.length };
-
-  // 2. Markov
-  const markov2 = analyzeMarkov(seq, 2);
-  const markov3 = analyzeMarkov(seq, 3);
-  const markov_score = { Tài: markov2.Tài * 0.4 + markov3.Tài * 0.6, Xỉu: markov2.Xỉu * 0.4 + markov3.Xỉu * 0.6 };
-
-  // 3. Pattern
-  const pattern_score = analyzePatterns(seq);
-
-  // 4. Tổng điểm
-  const tong_score = analyzeTong(recentTong);
-
-  // 5. Chu kỳ
-  const cycle_score = analyzeCycles(seq);
-
-  // 6. MD5 Tips
-  const md5 = analyzeMD5Tips(lastTong);
-  const md5_score = {
-    Tài: md5.result === "Tài" ? md5.confidence / 100 : md5.result === "Xỉu" ? (100 - md5.confidence) / 100 : 0.5,
-    Xỉu: md5.result === "Xỉu" ? md5.confidence / 100 : md5.result === "Tài" ? (100 - md5.confidence) / 100 : 0.5,
+  const frequency_score = {
+    Tài: tai_count / recent.length,
+    Xỉu: xiu_count / recent.length
   };
 
-  // 7. Dice Table
+  // 2. MARKOV CHAIN BẬC 2 & 3
+  const markov2 = analyzeMarkov(seq, 2);
+  const markov3 = analyzeMarkov(seq, 3);
+  const markov_score = {
+    Tài: (markov2.Tài * 0.4 + markov3.Tài * 0.6),
+    Xỉu: (markov2.Xỉu * 0.4 + markov3.Xỉu * 0.6)
+  };
+
+  // 3. PATTERN RECOGNITION
+  const pattern_score = analyzePatterns(seq);
+
+  // 4. PHÂN TÍCH TỔNG ĐIỂM
+  const tong_score = analyzeTong(recentTong);
+
+  // 5. PHÂN TÍCH CHU KỲ
+  const cycle_score = analyzeCycles(seq);
+
+  // 6. BẢNG TRA MD5 (Thêm từ file mẹo)
+  const lastTong = tongSeq[0];
+  const md5 = MD5_TIPS[lastTong] || { result: "Chưa rõ", confidence: 50 };
+  const md5_score = {
+    Tài: md5.result === "Tài" ? md5.confidence / 100 : (100 - md5.confidence) / 100,
+    Xỉu: md5.result === "Xỉu" ? md5.confidence / 100 : (100 - md5.confidence) / 100,
+  };
+
+  // 7. BẢNG TRA XÚC XẮC (Thêm từ file mẹo)
+  const lastDice = history[0];
   let dice_score = { Tài: 0.5, Xỉu: 0.5 };
   let diceConfidence = 0;
   if (lastDice && lastDice.x1 !== undefined) {
-    const dt = analyzeDiceTable(lastDice.x1, lastDice.x2, lastDice.x3);
+    const sorted = [lastDice.x1, lastDice.x2, lastDice.x3].sort((a, b) => a - b).join("");
+    const dt = DICE_TABLE[lastDice.tong] ? DICE_TABLE[lastDice.tong][sorted] : null;
     if (dt && dt.result !== "BỎ") {
       dice_score = {
         Tài: dt.result === "Tài" ? dt.confidence / 100 : (100 - dt.confidence) / 100,
@@ -238,27 +286,58 @@ function duDoanNangCao(historyData, last_n = 15) {
     }
   }
 
-  // 8. Cầu
-  const cau = analyzeCau(history);
-  const cau_score = { Tài: cau.Tài, Xỉu: cau.Xỉu };
-
-  // 9. Tổng hợp trọng số
-  const weights = { frequency: 0.12, markov: 0.15, pattern: 0.15, tong: 0.10, cycle: 0.10, md5: 0.13, dice: 0.15, cau: 0.10 };
-
-  const final_score = {
-    Tài: (frequency_score.Tài * weights.frequency) + (markov_score.Tài * weights.markov) + (pattern_score.Tài * weights.pattern) + (tong_score.Tài * weights.tong) + (cycle_score.Tài * weights.cycle) + (md5_score.Tài * weights.md5) + (dice_score.Tài * weights.dice) + (cau_score.Tài * weights.cau),
-    Xỉu: (frequency_score.Xỉu * weights.frequency) + (markov_score.Xỉu * weights.markov) + (pattern_score.Xỉu * weights.pattern) + (tong_score.Xỉu * weights.tong) + (cycle_score.Xỉu * weights.cycle) + (md5_score.Xỉu * weights.md5) + (dice_score.Xỉu * weights.dice) + (cau_score.Xỉu * weights.cau),
+  // TỔNG HỢP TRỌNG SỐ
+  const weights = {
+    frequency: 0.12, markov: 0.15, pattern: 0.15, tong: 0.10, cycle: 0.10,
+    md5: 0.13, dice: 0.15, cau: 0.10 // Thêm trọng số cho cầu
   };
 
-  // 10. Quyết định
+  // 8. PHÂN TÍCH CẦU (Từ quy tắc đọc cầu)
+  let cau_score = { Tài: 0.5, Xỉu: 0.5 };
+  if (seq.length >= 6) {
+    let alternate = 0;
+    for (let i = 0; i < Math.min(seq.length - 1, 10); i++) if (seq[i] !== seq[i+1]) alternate++;
+    if (alternate >= 6) { cau_score = { Tài: 0.5, Xỉu: 0.5 }; } // Cầu 1-1
+    
+    let bet = 1;
+    for (let i = 1; i < Math.min(seq.length, 10); i++) { if (seq[i] === seq[0]) bet++; else break; }
+    if (bet >= 5) { cau_score = seq[0] === "Tài" ? { Tài: 0.3, Xỉu: 0.7 } : { Tài: 0.7, Xỉu: 0.3 }; }
+  }
+
+  const final_score = {
+    Tài: (
+      frequency_score.Tài * weights.frequency +
+      markov_score.Tài * weights.markov +
+      pattern_score.Tài * weights.pattern +
+      tong_score.Tài * weights.tong +
+      cycle_score.Tài * weights.cycle +
+      md5_score.Tài * weights.md5 +
+      dice_score.Tài * weights.dice +
+      cau_score.Tài * weights.cau
+    ),
+    Xỉu: (
+      frequency_score.Xỉu * weights.frequency +
+      markov_score.Xỉu * weights.markov +
+      pattern_score.Xỉu * weights.pattern +
+      tong_score.Xỉu * weights.tong +
+      cycle_score.Xỉu * weights.cycle +
+      md5_score.Xỉu * weights.md5 +
+      dice_score.Xỉu * weights.dice +
+      cau_score.Xỉu * weights.cau
+    )
+  };
+
+  // QUYẾT ĐỊNH CUỐI CÙNG
   const threshold = 0.08;
   const diff = Math.abs(final_score.Tài - final_score.Xỉu);
 
   let result, confidence;
+
   if (diff < threshold) {
     const last3 = recent.slice(0, 3);
     const last3Tai = last3.filter(s => s === "Tài").length;
     const last3Xiu = last3.filter(s => s === "Xỉu").length;
+    
     if (last3Tai > last3Xiu) result = "Tài";
     else if (last3Xiu > last3Tai) result = "Xỉu";
     else result = tai_count >= xiu_count ? "Tài" : "Xỉu";
@@ -268,18 +347,23 @@ function duDoanNangCao(historyData, last_n = 15) {
     confidence = Math.round(Math.max(final_score.Tài, final_score.Xỉu) * 100);
   }
 
+  // GHI ĐÈ NẾU CÓ MẸO XÚC XẮC/ MD5 TỶ LỆ CAO
   if (md5.confidence >= 75 && md5.result !== "BỎ") { result = md5.result; confidence = md5.confidence; }
   if (diceConfidence >= 80 && dice_score.Tài !== 0.5) { result = dice_score.Tài > dice_score.Xỉu ? "Tài" : "Xỉu"; confidence = diceConfidence; }
-  if (isNoRunHour()) confidence = Math.min(confidence, 40);
 
-  return { result, confidence: Math.min(confidence, 100) };
+  // KHUNG GIỜ KHÔNG CHẠY (12h đêm - 5h sáng)
+  const h = new Date().getHours();
+  if (h >= 0 && h < 5) confidence = Math.min(confidence, 40);
+
+  return result; // Trả về chuỗi "Tài" hoặc "Xỉu"
 }
 
-function duDoan(historyData, last_n = 12) {
-  const r = duDoanNangCao(historyData, last_n);
-  return r.result;
+// Hàm dự đoán chính (tương thích)
+function duDoan(history, last_n = 12) {
+  return duDoanNangCao(history, last_n);
 }
 
+// Cập nhật lịch sử
 function updateResult(store, history, result) {
   Object.assign(store, result);
   history.unshift({ ...result });
@@ -287,7 +371,7 @@ function updateResult(store, history, result) {
 }
 
 /* ============================================================
-    PHẦN 4: ROUTE API TRẢ VỀ JSON CHUẨN ẢNH 2
+    PHẦN API RENDER TRẢ VỀ JSON CHUẨN ẢNH 2
    ============================================================ */
 app.get('/api/predict', async (req, res) => {
   try {
@@ -298,26 +382,29 @@ app.get('/api/predict', async (req, res) => {
     const currentSession = data.list[0];
     const nextSessionId = currentSession.id + 1;
     
-    // 1. Dự đoán phiên tiếp theo bằng FULL THUẬT TOÁN
-    const nextPrediction = duDoanNangCao(data.list);
+    // 1. Lấy kết quả dự đoán từ hàm gốc
+    const predictionResult = duDoanNangCao(data.list);
+    
+    // 2. Tính toán độ tin cậy
+    let confidence = calculateConfidence(data.list, predictionResult);
+    // Nếu độ tin cậy tính toán thấp, fallback về mức mặc định
+    if (confidence === 0) confidence = 65; 
 
-    // 2. Tạo lịch sử và thống kê
     const historyList = [];
     let thang = 0, thua = 0;
     let chuoiThangHienTai = 0, chuoiThuaHienTai = 0;
     let chuoiThangDaiNhat = 0, chuoiThuaDaiNhat = 0;
 
-    // Quét 15 phiên để tính lịch sử thắng/thua
+    // 3. Chạy thuật toán ngược lại 15 phiên để tạo lịch sử thắng/thua
     for (let i = 0; i < 15; i++) {
       const session = data.list[i];
       const isLatest = i === 0;
       
-      // Dùng full thuật toán để dự đoán lại phiên đó
-      const duDoan = isLatest ? nextPrediction.result : duDoanNangCao(data.list.slice(i)).result;
+      // Gọi hàm gốc cho từng phiên trong quá khứ
+      const duDoan = isLatest ? predictionResult : duDoanNangCao(data.list.slice(i));
       const ketQua = isLatest ? "dang_cho" : (session.resultTruyenThong === "TAI" ? "Tài" : "Xỉu");
       
       let trangThai = "dang_cho";
-      
       if (!isLatest) {
         const isWin = duDoan === ketQua;
         trangThai = isWin ? "thang" : "thua";
@@ -346,10 +433,10 @@ app.get('/api/predict', async (req, res) => {
     const lichSu = historyList.reverse();
     const tongPhien = thang + thua;
     const tiLeThang = tongPhien > 0 ? ((thang / tongPhien) * 100).toFixed(1) + "%" : "0%";
-
     const now = new Date();
     const timeString = now.toLocaleTimeString('vi-VN', { hour12: false }) + " " + now.toLocaleDateString('vi-VN');
 
+    // 4. Trả ra JSON đúng chuẩn ảnh 2
     const output = {
       id: "@tiendataox",
       game: "LC79 MD5",
@@ -360,8 +447,8 @@ app.get('/api/predict', async (req, res) => {
       ket_qua: currentSession.resultTruyenThong === "TAI" ? "Tài" : "Xỉu",
       thoi_gian: timeString,
       phien_nay: nextSessionId,
-      du_doan: nextPrediction.result,
-      do_tin_cay: nextPrediction.confidence + "%",
+      du_doan: predictionResult,
+      do_tin_cay: confidence + "%",
       thong_ke: {
         thang: thang,
         thua: thua,
@@ -381,6 +468,7 @@ app.get('/api/predict', async (req, res) => {
   }
 });
 
+// Bắt buộc phải có hàm listen để Render không báo lỗi exit code 1
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server chạy trên port ${PORT}`);
