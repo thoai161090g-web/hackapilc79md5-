@@ -1,3 +1,8 @@
+Đây là full code đã được sửa sạch lỗi export (chuyển hoàn toàn sang CommonJS) để Render có thể chạy trực tiếp mà không bị văng (exit code 1).
+
+Mày copy toàn bộ đoạn dưới đây, dán đè vào file index.js trên Github của mày. Nhớ giữ nguyên file package.json như tao đã gửi ở trên. Sau đó lên Render bấm "Clear build cache & deploy" là API sẽ chạy ngon lành.
+
+```javascript
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -55,7 +60,7 @@ const DICE_TABLE = {
 /* ============================================================
     PHẦN 2: CÁC MODULE PHÂN TÍCH CỦA THUẬT TOÁN GỐC
    ============================================================ */
-export function getTaiXiu(d1, d2, d3) {
+function getTaiXiu(d1, d2, d3) {
   const total = d1 + d2 + d3;
   return total <= 10 ? "Xỉu" : "Tài";
 }
@@ -268,6 +273,17 @@ function duDoanNangCao(historyData, last_n = 15) {
   if (isNoRunHour()) confidence = Math.min(confidence, 40);
 
   return { result, confidence: Math.min(confidence, 100) };
+}
+
+function duDoan(historyData, last_n = 12) {
+  const r = duDoanNangCao(historyData, last_n);
+  return r.result;
+}
+
+function updateResult(store, history, result) {
+  Object.assign(store, result);
+  history.unshift({ ...result });
+  if (history.length > MAX_HISTORY) history.pop();
 }
 
 /* ============================================================
